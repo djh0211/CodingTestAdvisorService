@@ -14,6 +14,9 @@ import altair as alt
 from datetime import date, timedelta
 import json
 from collections import defaultdict
+from collections import OrderedDict
+from datetime import date, timedelta
+
 
 
 from google.cloud import spanner
@@ -71,8 +74,8 @@ def goto_main_Page():
 
 # Spanner setting
 spanner_client = spanner.Client()
-instance = spanner_client.instance("***")
-database = instance.database("***")
+instance = spanner_client.instance("instance********")
+database = instance.database("db**********")
 
 ph = st.empty()
 
@@ -281,14 +284,21 @@ elif st.session_state.page == "main":
             else:
                 chart_data=st.session_state["chart_data"]["주 단위"]
             if "recommendation" not in st.session_state:
-                data_dic={}
-                data_dic["problem_ids"]=user_history_df.question_id.tolist()
-                tmp_c=user_history_df.result.tolist()
+                # data_dic={}
+                # data_dic["problem_ids"]=user_history_df.question_id.tolist()
+                # tmp_c=user_history_df.result.tolist()
+                # data_dic["problem_results"]=list(map(tools.get_binary_result,tmp_c))
+                # data_dic["problem_time_diffs"]=user_history_df.submitted_epochtime.tolist()
+                # q_list=tools.get_sample_q100()
                 
-                data_dic["problem_results"]=list(map(tools.get_binary_result,tmp_c))
-                data_dic["problem_time_diffs"]=user_history_df.submitted_epochtime.tolist()
+                # TODO 여기에요!!!!
+                url = "http*****:8000/review_recommendation/"
+                headers = {"Accept": "application/json"}
+                data_dic={"user_id":user_id}
+                response = requests.post(url, json=data_dic, headers=headers)
+                q_list=list(map(int,response.json()))
                 
-                q_list=tools.get_sample_q100()
+                
                 params_get_recommendation={}
                 param_types_get_recommendation={}
                 for i in range(len(q_list)):
@@ -304,29 +314,23 @@ elif st.session_state.page == "main":
                         param_types=param_types_get_recommendation
                     )
                 recommendation=list(iter(recommendation))
-                my_unique_questions=set(data_dic["problem_ids"])
-                recommendation_type=[]
-                for i in list(map(lambda x:x[0],recommendation)):
-                    if i in my_unique_questions:
-                        recommendation_type.append(["복습"])
-                    else:
-                        recommendation_type.append(["예습"])
-                recommendation=np.concatenate([recommendation, recommendation_type], 1)
+                
                 te1={}
-                te2={}
                 for i in recommendation:
-                    if i[-1]=="복습":
-                        te1[i[0]]=i[1:]
-                    else:
-                        te2[i[0]]=i[1:]
-
+                    te1[int(i[0])]=i[1:]
                 recommendation={}
-                recommendation["복습"]=te1
-                recommendation["예습"]=te2
+                recommendation["복습"]={}
+                recommendation["복습"]["content"]=te1
+                recommendation["복습"]["rank"]=q_list
                 st.session_state["recommendation"]=recommendation
                 
+                te1=OrderedDict()
+                for q_id in q_list:
+                    te1[q_id]=recommendation["복습"]["content"][q_id]
+                recommendation["복습"]["content"]=te1
+              
                 # TODO 일단 10개나오는 api는 주석 start
-            #     url = "********"
+            #     url = "http********:8000/inference/"
             #     headers = {"Accept": "application/json"}
 
             #     response = requests.post(url, json=data_dic, headers=headers)
@@ -447,6 +451,23 @@ elif st.session_state.page == "main":
                                 del st.session_state["questions_tags_in_review"]
                             if "questions_tags_in_preview" in st.session_state:
                                 del st.session_state["questions_tags_in_preview"]
+                                
+                            today = date.today()
+                            with database.snapshot() as snapshot:
+                                is_preview_recommendation = snapshot.execute_sql(
+                                        "SELECT * FROM daily_preview_recommendation WHERE user_id=@name AND created_date=@today ORDER BY recommendation_rank",
+                                        params={"name": user_id,"today":today},
+                                        param_types={"name": spanner.param_types.STRING,
+                                                    "today": spanner.param_types.DATE}
+                                    )
+                            is_preview_recommendation=list(iter(is_preview_recommendation))
+                            is_preview_recommendation=list(map(lambda x:x[:3],is_preview_recommendation))
+                            rows_to_delete = spanner.KeySet(keys=is_preview_recommendation)
+
+                            with database.batch() as batch:
+                                batch.delete("daily_preview_recommendation", rows_to_delete)
+                                
+                                
                             if "recommendation" in st.session_state:
                                 del st.session_state["recommendation"]
                             if "chart_data" in st.session_state:
@@ -457,6 +478,7 @@ elif st.session_state.page == "main":
                                 del st.session_state["review_recommendation_tags_name_list"]
                             if "preview_recommendation_tags_name_list" in st.session_state:
                                 del st.session_state["preview_recommendation_tags_name_list"]
+                            
                             
                             st.experimental_rerun()
 
@@ -744,19 +766,30 @@ elif st.session_state.page == "main":
                             result_get_questions_info=list(iter(result_get_questions_info))
                             questions_info_in_test={}
                             questions_tags_in_test={}
+                            
                             for i in result_get_questions_info:
                                 questions_info_in_test[i[0]]=i[1:]
                             for i in result_get_questions_info:
                                 with database.snapshot() as snapshot:
                                     questions_tags_in_test[i[0]]=tools.get_question_tags_from_spanner(database,i[0])
+                                    
+                            url = "http***********:8000/prediction/"
+                            headers = {"Accept": "application/json"}
+                            data_dic={"user_id":user_id,"codingtest_question_list":selected_test_info["questions_in_test"]}
+                            response = requests.post(url, json=data_dic, headers=headers)
+                            prediction_in_test=response.json()
+                            
+                            st.session_state.prediction_in_test=prediction_in_test
                             st.session_state.questions_info_in_test=questions_info_in_test
                             st.session_state.questions_tags_in_test=questions_tags_in_test
                         else:
                             questions_info_in_test=st.session_state["questions_info_in_test"]
                             questions_tags_in_test=st.session_state["questions_tags_in_test"]
+                            prediction_in_test=st.session_state["prediction_in_test"]
                             
                         
                         test_questions_container_list=[]
+                        
                         for i in range(len(selected_test_info["questions_in_test"])):
                             test_questions_container_list.append(st.container())
                         for i in range(len(test_questions_container_list)):
@@ -764,6 +797,7 @@ elif st.session_state.page == "main":
                             question_name=questions_info_in_test[question_id][0]
                             level_id=questions_info_in_test[question_id][2]
                             level_name=questions_info_in_test[question_id][1]
+                            prediction=prediction_in_test[str(question_id)]
                             with test_questions_container_list[i]:
                                 test_questions_tags=questions_tags_in_test[question_id]
                                 with st.expander(f"**:green[# {question_id}]**       **{question_name}**",expanded=True):
@@ -774,7 +808,7 @@ elif st.session_state.page == "main":
                                     tag = f'<p><span style="font-size: 13px; color: {tools.level_to_colorcode(level_id)}"><b>{level_name}&nbsp;</b></span><span style="font-size: 10px">{ts}</span></p>'
                                     st.markdown(tag, unsafe_allow_html=True)
                                     
-                                    st.markdown(f'<p><span style="font-size: 13px; color: #ea3364"><b>예상정답률:&nbsp;</b></span><span style="font-size: 13px; color: #ea3364"><b>90%</b></span></p',unsafe_allow_html=True)
+                                    st.markdown(f'<p><span style="font-size: 13px; color: #ea3364"><b>예상정답률:&nbsp;</b></span><span style="font-size: 13px; color: #ea3364"><b>{int(100*prediction)}%</b></span></p',unsafe_allow_html=True)
                                     
                                     question_url = f"https://www.acmicpc.net/problem/{question_id}"
                                     st.markdown(f'''
@@ -793,12 +827,12 @@ elif st.session_state.page == "main":
                     if "questions_tags_in_review" not in st.session_state:
                         params_get_recommendation_tags={}
                         param_types_get_recommendation_tags={}
-                        for i, (key, value) in enumerate(review_recommendation.items()):
+                        for i, key in enumerate(review_recommendation["rank"]):
                             params_get_recommendation_tags[f"q{i}"]=key
                             param_types_get_recommendation_tags[f"q{i}"]= spanner.param_types.INT64
 
                         sql_get_recommendation_tags="SELECT question_id,ko_name tag_name FROM question_tag_relation A, tag B WHERE A.question_id in "
-                        sql_get_recommendation_tags+='('+','.join([f"@q{i}" for i in range(len(review_recommendation))])+') '
+                        sql_get_recommendation_tags+='('+','.join([f"@q{i}" for i in range(len(review_recommendation["rank"]))])+') '
                         sql_get_recommendation_tags+="AND A.tag_id=B.id"
                         with database.snapshot() as snapshot:
                             result_get_recommendation_tags= snapshot.execute_sql(
@@ -827,89 +861,199 @@ elif st.session_state.page == "main":
                     st.info("1개 이상 5개 이하의 태그를 선택해주세요.")
                 with c42:
                     # TODO 만약 100개 들어온다면 페이지 기능 추가 / questions_tags_in_review 이거 하나씩 스패너에 요청하지 말고 한꺼번에 in 걸어서 받고 그 안에서 검색하는 식으로 하자 
-                        if not recommendation_multiselect1:
-                            pcol1,pcol2=st.columns([4,1])
-                            with pcol2:
-                                review_recommendation_page_num=st.number_input(f"페이지 넘버(1~{(len(review_recommendation)//10)+1})",min_value=1,
-                                                                                max_value=(len(review_recommendation)//10)+1,value=1,step=1,
-                                                                                key="review_recommendation_page_num")
-
+                    if not recommendation_multiselect1:
+                        pcol1,pcol2=st.columns([4,1])
+                        with pcol2:
+                            review_page_max=(len(review_recommendation["rank"])//10)+1
+                            review_recommendation_page_num=st.number_input(f"페이지 넘버(1~{review_page_max})",min_value=1,
+                                                                            max_value=review_page_max,value=1,step=1,
+                                                                            key="review_recommendation_page_num")
                                 
-                                
-                            if review_recommendation_page_num==(len(review_recommendation)//10)+1:
-                                subset_review_recommendation=dict(list(review_recommendation.items())[10*(review_recommendation_page_num-1):])
+                            if review_recommendation_page_num==review_page_max:
+                                subset_review_recommendation=dict(list(review_recommendation["content"].items())[10*(review_recommendation_page_num-1):])
                             else:
-                                subset_review_recommendation=dict(list(review_recommendation.items())[10*(review_recommendation_page_num-1):10*(review_recommendation_page_num)])
- 
-                            recommendation_container_list1=[]
-                            for i in range(len(subset_review_recommendation)):
-                                recommendation_container_list1.append(st.container())
-                                
-                            for i, (key, value) in enumerate(subset_review_recommendation.items()):
-                                question_id=int(key)
-                                question_name=value[0]
-                                level_name=value[1]
-                                level_id=int(value[2])
-                                recommend_type=value[3]
-                                with recommendation_container_list1[i]:
-                                    with st.expander(f"**:green[{recommend_type} # {str(question_id)}]**       **{question_name}**",expanded=True):
-                                        ts=""
-                                        if len(questions_tags_in_review[question_id])!=0:
-                                            for i in range(len(questions_tags_in_review[question_id])):
-                                                ts=ts+"#"+str(questions_tags_in_review[question_id][i])+"&nbsp;"
-                                        tag = f'<p><span style="font-size: 13px; color: {tools.level_to_colorcode(level_id)}"><b>{level_name}&nbsp;</b></span><span style="font-size: 10px">{ts}</span></p>'
-                                        st.markdown(tag, unsafe_allow_html=True)
-                                        question_url = f"https://www.acmicpc.net/problem/{question_id}"
-                                        st.markdown(f'''
-                                                <a href={question_url}><button class="button button1">백준에서 보기</button></a>
-                                                ''',
-                                                unsafe_allow_html=True)
+                                subset_review_recommendation=dict(list(review_recommendation["content"].items())[10*(review_recommendation_page_num-1):10*(review_recommendation_page_num)])
+                        recommendation_container_list1=[]
+                        for i in range(len(subset_review_recommendation)):
+                            recommendation_container_list1.append(st.container())
                             
-                    # TODO 여기 살려야함
-                        else:
-                            selected_review_questions_ids=[]
-                            for k,v in questions_tags_in_review.items():
-                                if list(set(recommendation_multiselect1) & set(v)):
-                                    selected_review_questions_ids.append(k)
-                            selected_review_recommendation = {int(key): value for key, value in review_recommendation.items() if int(key) in selected_review_questions_ids}
-                            ppcol1,ppcol2=st.columns([4,1])
-                            with ppcol2:
-                                selected_review_recommendation_page_num=st.number_input(f"페이지 넘버(1~{(len(selected_review_recommendation)//10)+1})",min_value=1,
-                                                                                max_value=(len(selected_review_recommendation)//10)+1,value=1,step=1,
-                                                                                key="selected_review_recommendation_page_num")
+                        for i, (key, value) in enumerate(subset_review_recommendation.items()):
+                            question_id=int(key)
+                            question_name=value[0]
+                            level_name=value[1]
+                            level_id=int(value[2])
+                            recommend_type="복습"
+                            with recommendation_container_list1[i]:
+                                with st.expander(f"**:green[{recommend_type} # {str(question_id)}]**       **{question_name}**",expanded=True):
+                                    ts=""
+                                    if len(questions_tags_in_review[question_id])!=0:
+                                        for i in range(len(questions_tags_in_review[question_id])):
+                                            ts=ts+"#"+str(questions_tags_in_review[question_id][i])+"&nbsp;"
+                                    tag = f'<p><span style="font-size: 13px; color: {tools.level_to_colorcode(level_id)}"><b>{level_name}&nbsp;</b></span><span style="font-size: 10px">{ts}</span></p>'
+                                    st.markdown(tag, unsafe_allow_html=True)
+                                    question_url = f"https://www.acmicpc.net/problem/{question_id}"
+                                    st.markdown(f'''
+                                            <a href={question_url}><button class="button button1">백준에서 보기</button></a>
+                                            ''',
+                                            unsafe_allow_html=True)
+                            
+            #         # TODO 여기 살려야함
+                    else:
+                        selected_review_questions_ids=[]
+                        for k,v in questions_tags_in_review.items():
+                            if list(set(recommendation_multiselect1) & set(v)):
+                                selected_review_questions_ids.append(k)
+                        selected_review_recommendation = {int(key): value for key, value in review_recommendation["content"].items() if int(key) in selected_review_questions_ids}
+                        ppcol1,ppcol2=st.columns([4,1])
+                        with ppcol2:
+                            review_page_max=(len(selected_review_recommendation)//10)+1
+                            selected_review_recommendation_page_num=st.number_input(f"페이지 넘버(1~{review_page_max})",min_value=1,
+                                                                            max_value=review_page_max,value=1,step=1,
+                                                                            key="selected_review_recommendation_page_num")
 
-                                
-                                
-                            if selected_review_recommendation_page_num==(len(selected_review_recommendation)//10)+1:
-                                subset_review_recommendation=dict(list(selected_review_recommendation.items())[10*(selected_review_recommendation_page_num-1):])
-                            else:
-                                subset_review_recommendation=dict(list(selected_review_recommendation.items())[10*(selected_review_recommendation_page_num-1):10*(selected_review_recommendation_page_num)])
- 
-                            recommendation_container_list1=[]
-                            for i in range(len(subset_review_recommendation)):
-                                recommendation_container_list1.append(st.container())
-                                
-                            for i, (key, value) in enumerate(subset_review_recommendation.items()):
-                                question_id=int(key)
-                                question_name=value[0]
-                                level_name=value[1]
-                                level_id=int(value[2])
-                                recommend_type=value[3]
-                                with recommendation_container_list1[i]:
-                                    with st.expander(f"**:green[{recommend_type} # {str(question_id)}]**       **{question_name}**",expanded=True):
-                                        ts=""
-                                        if len(questions_tags_in_review[question_id])!=0:
-                                            for i in range(len(questions_tags_in_review[question_id])):
-                                                ts=ts+"#"+str(questions_tags_in_review[question_id][i])+"&nbsp;"
-                                        tag = f'<p><span style="font-size: 13px; color: {tools.level_to_colorcode(level_id)}"><b>{level_name}&nbsp;</b></span><span style="font-size: 10px">{ts}</span></p>'
-                                        st.markdown(tag, unsafe_allow_html=True)
-                                        question_url = f"https://www.acmicpc.net/problem/{question_id}"
-                                        st.markdown(f'''
-                                                <a href={question_url}><button class="button button1">백준에서 보기</button></a>
-                                                ''',
-                                                unsafe_allow_html=True)
+                        if selected_review_recommendation_page_num==review_page_max:
+                            subset_review_recommendation=dict(list(selected_review_recommendation.items())[10*(selected_review_recommendation_page_num-1):])
+                        else:
+                            subset_review_recommendation=dict(list(selected_review_recommendation.items())[10*(selected_review_recommendation_page_num-1):10*(selected_review_recommendation_page_num)])
+
+                        recommendation_container_list1=[]
+                        for i in range(len(subset_review_recommendation)):
+                            recommendation_container_list1.append(st.container())
+                            
+                        for i, (key, value) in enumerate(subset_review_recommendation.items()):
+                            question_id=int(key)
+                            question_name=value[0]
+                            level_name=value[1]
+                            level_id=int(value[2])
+                            recommend_type="복습"
+                            with recommendation_container_list1[i]:
+                                with st.expander(f"**:green[{recommend_type} # {str(question_id)}]**       **{question_name}**",expanded=True):
+                                    ts=""
+                                    if len(questions_tags_in_review[question_id])!=0:
+                                        for i in range(len(questions_tags_in_review[question_id])):
+                                            ts=ts+"#"+str(questions_tags_in_review[question_id][i])+"&nbsp;"
+                                    tag = f'<p><span style="font-size: 13px; color: {tools.level_to_colorcode(level_id)}"><b>{level_name}&nbsp;</b></span><span style="font-size: 10px">{ts}</span></p>'
+                                    st.markdown(tag, unsafe_allow_html=True)
+                                    question_url = f"https://www.acmicpc.net/problem/{question_id}"
+                                    st.markdown(f'''
+                                            <a href={question_url}><button class="button button1">백준에서 보기</button></a>
+                                            ''',
+                                            unsafe_allow_html=True)
                                                                     
         with tab4:
+            with st.spinner("예습 문제 추천 진행중..."):
+                if "예습" not in st.session_state["recommendation"]:
+                    with database.snapshot() as snapshot:
+                        today=date.today()
+                        is_preview_recommendation = snapshot.execute_sql(
+                            "SELECT * FROM daily_preview_recommendation WHERE user_id=@name AND created_date=@today ORDER BY recommendation_rank",
+                            params={"name": user_id,"today":today},
+                            param_types={"name": spanner.param_types.STRING,
+                                        "today": spanner.param_types.DATE}
+                        )
+                    is_preview_recommendation=list(iter(is_preview_recommendation))
+                    if len(is_preview_recommendation)!=0: # 이미 있을때
+                        preview_q_list=list(map(lambda x:x[-1],is_preview_recommendation))
+                        params_get_recommendation={}
+                        param_types_get_recommendation={}
+                        for i in range(len(preview_q_list)):
+                            params_get_recommendation[f"q{i}"]=preview_q_list[i]
+                            param_types_get_recommendation[f"q{i}"]= spanner.param_types.INT64
+                        sql_get_recommendation_info="WITH tmp AS (SELECT * FROM question WHERE id in "
+                        sql_get_recommendation_info+='('+','.join([f"@q{i}" for i in range(len(preview_q_list))])+')) '
+                        sql_get_recommendation_info+="SELECT A.id,title,name,level_id FROM tmp A LEFT JOIN level B ON A.level_id=B.id"
+                        with database.snapshot() as snapshot:
+                            preview_recommendation = snapshot.execute_sql(
+                                sql_get_recommendation_info,
+                                params=params_get_recommendation,
+                                param_types=param_types_get_recommendation
+                            )
+                        preview_recommendation=list(iter(preview_recommendation))
+                        
+                        te2={}
+                        for i in preview_recommendation:
+                            te2[int(i[0])]=i[1:]
+                        preview_recommendation={}
+                        preview_recommendation["예습"]={}
+                        preview_recommendation["예습"]["content"]=te2
+                        preview_recommendation["예습"]["rank"]=preview_q_list    
+                        
+                        
+                        te2=OrderedDict()
+                        for q_id in preview_q_list:
+                            te2[q_id]=preview_recommendation["예습"]["content"][q_id]
+                        preview_recommendation["예습"]["content"]=te2
+                        
+                                           
+                        st.session_state["recommendation"]["예습"]=preview_recommendation["예습"]
+                        recommendation=st.session_state["recommendation"]
+                    else:
+                        url = "http***********:8000/preview_recommendation/"
+                        headers = {"Accept": "application/json"}
+                        data_dic={"user_id":user_id,"level_id":int(user_data_dic["level_id"])}
+                        response = requests.post(url, json=data_dic, headers=headers)
+                        q_list=list(map(int,response.json()))
+                        today=date.today()
+                        batch_data=[]
+                        for i,content in enumerate(q_list):
+                            batch_data.append([user_id,today,i,content])
+                        
+                        try:
+                            with database.batch() as batch:
+                                batch.insert(
+                                    table="daily_preview_recommendation",
+                                    columns=("user_id","created_date",
+                                                "recommendation_rank","question_id"),
+                                    values=batch_data,
+                                )
+                        except Exception as e:
+                            pass
+                        with database.snapshot() as snapshot:
+                            is_preview_recommendation = snapshot.execute_sql(
+                                    "SELECT * FROM daily_preview_recommendation WHERE user_id=@name AND created_date=@today ORDER BY recommendation_rank",
+                                    params={"name": user_id,"today":today},
+                                    param_types={"name": spanner.param_types.STRING,
+                                                "today": spanner.param_types.DATE}
+                                )
+                        is_preview_recommendation=list(iter(is_preview_recommendation))
+                        preview_q_list=list(map(lambda x:x[-1],is_preview_recommendation))
+                        params_get_recommendation={}
+                        param_types_get_recommendation={}
+                        for i in range(len(preview_q_list)):
+                            params_get_recommendation[f"q{i}"]=preview_q_list[i]
+                            param_types_get_recommendation[f"q{i}"]= spanner.param_types.INT64
+                        sql_get_recommendation_info="WITH tmp AS (SELECT * FROM question WHERE id in "
+                        sql_get_recommendation_info+='('+','.join([f"@q{i}" for i in range(len(preview_q_list))])+')) '
+                        sql_get_recommendation_info+="SELECT A.id,title,name,level_id FROM tmp A LEFT JOIN level B ON A.level_id=B.id"
+                        with database.snapshot() as snapshot:
+                            preview_recommendation = snapshot.execute_sql(
+                                sql_get_recommendation_info,
+                                params=params_get_recommendation,
+                                param_types=param_types_get_recommendation
+                            )
+                        preview_recommendation=list(iter(preview_recommendation))
+                        
+                        te2={}
+                        for i in preview_recommendation:
+                            te2[int(i[0])]=i[1:]
+                        preview_recommendation={}
+                        preview_recommendation["예습"]={}
+                        preview_recommendation["예습"]["content"]=te2
+                        preview_recommendation["예습"]["rank"]=preview_q_list    
+                        
+                        
+                        te2=OrderedDict()
+                        for q_id in preview_q_list:
+                            te2[q_id]=preview_recommendation["예습"]["content"][q_id]
+                        preview_recommendation["예습"]["content"]=te2
+                        
+                        st.session_state["recommendation"]["예습"]=preview_recommendation["예습"]
+                        recommendation=st.session_state["recommendation"]
+                        
+                else:
+                    recommendation=st.session_state["recommendation"]
+                    
+            preview_recommendation=recommendation["예습"]
             container5= st.container()
             with container5:
                 preview_recommendation=recommendation["예습"]
@@ -917,12 +1061,12 @@ elif st.session_state.page == "main":
                     if "questions_tags_in_preview" not in st.session_state:
                         params_get_recommendation_tags={}
                         param_types_get_recommendation_tags={}
-                        for i, (key, value) in enumerate(preview_recommendation.items()):
+                        for i, key in enumerate(preview_recommendation["rank"]):
                             params_get_recommendation_tags[f"q{i}"]=key
                             param_types_get_recommendation_tags[f"q{i}"]= spanner.param_types.INT64
 
                         sql_get_recommendation_tags="SELECT question_id,ko_name tag_name FROM question_tag_relation A, tag B WHERE A.question_id in "
-                        sql_get_recommendation_tags+='('+','.join([f"@q{i}" for i in range(len(preview_recommendation))])+') '
+                        sql_get_recommendation_tags+='('+','.join([f"@q{i}" for i in range(len(preview_recommendation["rank"]))])+') '
                         sql_get_recommendation_tags+="AND A.tag_id=B.id"
                         with database.snapshot() as snapshot:
                             result_get_recommendation_tags= snapshot.execute_sql(
@@ -954,16 +1098,17 @@ elif st.session_state.page == "main":
                         if not recommendation_multiselect2:
                             pcol3,pcol4=st.columns([4,1])
                             with pcol4:
-                                preview_recommendation_page_num=st.number_input(f"페이지 넘버(1~{(len(preview_recommendation)//10)+1})",min_value=1,
-                                                                                max_value=(len(preview_recommendation)//10)+1,value=1,step=1,
+                                preview_page_max=(len(preview_recommendation["rank"])//10)+1
+                                preview_recommendation_page_num=st.number_input(f"페이지 넘버(1~{preview_page_max})",min_value=1,
+                                                                                max_value=preview_page_max,value=1,step=1,
                                                                                 key="preview_recommendation_page_num")
 
                                 
                                 
-                            if preview_recommendation_page_num==(len(preview_recommendation)//10)+1:
-                                subset_preview_recommendation=dict(list(preview_recommendation.items())[10*(preview_recommendation_page_num-1):])
+                            if preview_recommendation_page_num==preview_page_max:
+                                subset_preview_recommendation=dict(list(preview_recommendation["content"].items())[10*(preview_recommendation_page_num-1):])
                             else:
-                                subset_preview_recommendation=dict(list(preview_recommendation.items())[10*(preview_recommendation_page_num-1):10*(preview_recommendation_page_num)])
+                                subset_preview_recommendation=dict(list(preview_recommendation["content"].items())[10*(preview_recommendation_page_num-1):10*(preview_recommendation_page_num)])
  
                             recommendation_container_list2=[]
                             for i in range(len(subset_preview_recommendation)):
@@ -974,7 +1119,7 @@ elif st.session_state.page == "main":
                                 question_name=value[0]
                                 level_name=value[1]
                                 level_id=int(value[2])
-                                recommend_type=value[3]
+                                recommend_type="예습"
                                 with recommendation_container_list2[i]:
                                     with st.expander(f"**:green[{recommend_type} # {str(question_id)}]**       **{question_name}**",expanded=True):
                                         ts=""
@@ -989,22 +1134,23 @@ elif st.session_state.page == "main":
                                                 ''',
                                                 unsafe_allow_html=True)
                             
-                    # TODO 여기 살려야함
+            #         # TODO 여기 살려야함
                         else:
                             selected_preview_questions_ids=[]
                             for k,v in questions_tags_in_preview.items():
                                 if list(set(recommendation_multiselect2) & set(v)):
                                     selected_preview_questions_ids.append(k)
-                            selected_preview_recommendation = {int(key): value for key, value in preview_recommendation.items() if int(key) in selected_preview_questions_ids}
+                            selected_preview_recommendation = {int(key): value for key, value in preview_recommendation["content"].items() if int(key) in selected_preview_questions_ids}
                             ppcol3,ppcol4=st.columns([4,1])
                             with ppcol4:
-                                selected_preview_recommendation_page_num=st.number_input(f"페이지 넘버(1~{(len(selected_preview_recommendation)//10)+1})",min_value=1,
-                                                                                max_value=(len(selected_preview_recommendation)//10)+1,value=1,step=1,
+                                preview_page_max=(len(selected_preview_recommendation)//10)+1
+                                selected_preview_recommendation_page_num=st.number_input(f"페이지 넘버(1~{preview_page_max})",min_value=1,
+                                                                                max_value=preview_page_max,value=1,step=1,
                                                                                 key="selected_preview_recommendation_page_num")
 
                                 
                                 
-                            if selected_preview_recommendation_page_num==(len(selected_preview_recommendation)//10)+1:
+                            if selected_preview_recommendation_page_num==preview_page_max:
                                 subset_preview_recommendation=dict(list(selected_preview_recommendation.items())[10*(selected_preview_recommendation_page_num-1):])
                             else:
                                 subset_preview_recommendation=dict(list(selected_preview_recommendation.items())[10*(selected_preview_recommendation_page_num-1):10*(selected_preview_recommendation_page_num)])
@@ -1018,7 +1164,7 @@ elif st.session_state.page == "main":
                                 question_name=value[0]
                                 level_name=value[1]
                                 level_id=int(value[2])
-                                recommend_type=value[3]
+                                recommend_type="예습"
                                 with recommendation_container_list2[i]:
                                     with st.expander(f"**:green[{recommend_type} # {str(question_id)}]**       **{question_name}**",expanded=True):
                                         ts=""
